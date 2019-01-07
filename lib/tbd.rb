@@ -1,14 +1,20 @@
 require 'dbi'
-RubyInstaller::Runtime.add_dll_directory("dll_lib/")
+require 'base64'
+require 'uri'
+require 'httparty'
+require 'OpenSSL'
+
+# need to get the dll files
 
 module TBD
     class Connect
-        def self.connect_to_sql
-            puts "connecting to sql..."
+        def self.test
+            puts "testing..."
         end
     end
     class OracleConnector
         def self.open(database, username, password)
+            # RubyInstaller::Runtime.add_dll_directory("#{__dir__}/dll_lib/")
             return DBI.connect("DBI:OCI8:#{database}", username, password)
         end
         def self.execute(dbh, sql)
@@ -82,5 +88,62 @@ module TBD
         end
     end
     class CosmosConnector
+        def self.run_query(host, request, query_data)
+            url = "#{host}/#{request}"
+            auth_headers = get_auth_headers action: 'POST', request: request
+            message_headers = {
+                'Accept' => 'application/json',
+                'x-ms-version' => '2016-07-11',
+                'x-ms-documentdb-isquery' => 'true',
+                'x-ms-max-item-count' => '-1',
+                'Content-Type' => 'application/query+json',
+                'x-ms-documentdb-query-enablecrosspartition' => 'true' 
+            }
+            message_headers['x-ms-date'] = auth_headers['x-ms-date']
+            message_headers['Authorization'] = auth_headers['Authorization']
+            response = HTTParty.post(url, body: query_data, headers: message_headers)
+            process_response response
+        end
+        def self.get_auth_headers(input)
+            request = input[:request]
+            utc_string = Time.now.utc.strftime("%a, %d %b %Y %H:%M:%S GMT")
+            request_components = request.split('/')
+            component_count = request_components.count-1
+            resource_id = ''
+            resource_type = ''
+            if (component_count % 2)
+                resource_type = request_components[component_count]
+                if (component_count > 1)
+                    resource_id = request[0..(request.rindex('/')-1)]
+                end
+            else
+                resource_type = request_components[component_count-1]
+                resource_id = request
+            end
+            if input[:action].nil?
+                verb = 'get'
+            else
+                verb = input[:action].downcase
+            end
+            date = utc_string.downcase
+            key = (Base64.decode64 @master_key)
+            text = (verb || "").downcase + "\n" + (resource_type || "").downcase + "\n" + (date || "").downcase + "\n" + "" + "\n"
+            signature = OpenSSL::HMAC.digest('SHA256',key,text)
+            base_64_bits = (Base64.encode64 signature).chomp
+            master_token = "master"
+            token_version = "1.0"
+            auth_string = "type=" + master_token + "&ver=" + token_version + "&sig=" + base_64_bits
+            auth = URI.escape(auth_string, Regexp.new("[^#{URI::PATTERN::UNRESERVED}]"))
+            header = {
+                "x-ms-date" => utc_string,
+                "Authorization" => auth
+            }
+        end
+        def self.process_response(response)
+            unless response.code.eql? 200
+                raise HTTParty::ResponseError, "#{response.code} - #{response.message}"
+            end
+            response.body
+        end
     end
 end
